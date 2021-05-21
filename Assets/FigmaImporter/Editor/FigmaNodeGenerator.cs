@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Linq;
+using System.Threading.Tasks;
 using TMPro;
 using UnityEditor;
 using UnityEngine;
@@ -18,8 +20,12 @@ namespace FigmaImporter.Editor
             _importer = importer;
         }
 
-        public void GenerateNode(Node node, GameObject parent = null)
+        public async Task GenerateNode(Node node, GameObject parent = null)
         {
+            FigmaNodesProgressInfo.CurrentNode ++;
+            FigmaNodesProgressInfo.CurrentInfo = "Node generation in progress";
+            FigmaNodesProgressInfo.ShowProgress(0f);
+            
             var boundingBox = node.absoluteBoundingBox;
             bool isParentCanvas = false;
             if (parent == null)
@@ -28,7 +34,7 @@ namespace FigmaImporter.Editor
                 offset = boundingBox.GetPosition();
                 isParentCanvas = true;
             }
-
+            
             GameObject nodeGo = new GameObject();
             RectTransform parentT = parent.GetComponent<RectTransform>();
             if (isParentCanvas)
@@ -36,26 +42,42 @@ namespace FigmaImporter.Editor
             nodeGo.name = node.name;
             var rectTransform = nodeGo.AddComponent<RectTransform>();
             SetPosition(parentT, rectTransform, boundingBox);
-            if (node.name == "bbbbbbbbbb")
-                Debug.Log("oopsie");
+
             if (!isParentCanvas)
                 SetConstraints(parentT, rectTransform, node.constraints);
+            
             SetMask(node, nodeGo);
-            if (node.type != "TEXT" && (node.children == null || node.children.Length == 0))
+            if (!IsNodeGeneratable(node))
             {
-                //TODO Integrate properly
-                AddFills(node, nodeGo);
-                
-                // RenderNodeAndApply(node, nodeGo);
+                await RenderNodeAndApply(node, nodeGo);
             }
             else
             {
                 AddText(node, nodeGo);
                 AddFills(node, nodeGo);
                 if (node.children == null) return;
-                foreach (var child in node.children)
-                    GenerateNode(child, nodeGo);
+                await Task.WhenAll(node.children.Select(x => GenerateNode(x, nodeGo))); //todo: Need to fix the progress bar because of simultaneous nodes generation.
             }
+        }
+
+        private static bool IsNodeGeneratable(Node node)
+        {
+            var hasChildren = (node.children != null && node.children.Length > 0);
+            switch (node.type)
+            {
+                case "TEXT":
+                    return true;
+                case "RECTANGLE": //TODO: In case of Image fill, this type of node comes. Need to process it properly.
+                case "FRAME":
+                    if (node.fills.Length > 0 && !hasChildren && node.fills.All(x=>x.type!="IMAGE"))
+                        return (node.effects == null || node.effects.Length == 0) && 
+                               (node.strokes == null || node.strokes.Length == 0);
+                    return hasChildren;
+                default:
+                    return hasChildren;
+            }
+
+            return false;
         }
 
         private void AddText(Node node, GameObject nodeGo)
@@ -112,14 +134,18 @@ namespace FigmaImporter.Editor
             }
         }
 
-        private void RenderNodeAndApply(Node node, GameObject nodeGo)
+        private async Task RenderNodeAndApply(Node node, GameObject nodeGo)
         {
-            var result = _importer.GetImage(node.id);
+            FigmaNodesProgressInfo.CurrentInfo = "Loading image";
+            FigmaNodesProgressInfo.ShowProgress(0f);
+            var result = await _importer.GetImage(node.id);
             var t = nodeGo.transform as RectTransform;
             string spriteName = $"{node.name}_{node.id.Replace(':', '_')}.png";
             
             Image image = null;
             Sprite sprite = null;
+            FigmaNodesProgressInfo.CurrentInfo = "Saving rendered nodes";
+            FigmaNodesProgressInfo.ShowProgress(0f);
             try
             {
                 SaveTexture(result, $"/{_importer.GetRendersFolderPath()}/{spriteName}");
@@ -173,6 +199,9 @@ namespace FigmaImporter.Editor
                             tmp.color = fill.color.ToColor();
                         else
                             image.color = fill.color.ToColor();
+                        break;
+                    case "IMAGE": //TODO: Finish this case.
+                        
                         break;
                     default:
                         gg.AddGradient(fill, image);
